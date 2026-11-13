@@ -1,0 +1,116 @@
+{
+  "meta": {
+    "label": "human",
+    "is_bot": false,
+    "caller": "human",
+    "variant": null,
+    "bot_settings": null,
+    "fake_backends": false,
+    "screener": "rules",
+    "one_way_latency_ms": 0.0,
+    "llm_model": null,
+    "time": "2026-11-13 14:55:29",
+    "screener_error": null
+  },
+  "call": {
+    "turns": [
+      {
+        "name": "greet",
+        "prompt_start": 0.02,
+        "prompt_end": 6.22,
+        "reply_start": 2.48,
+        "reply_end": 2.74,
+        "latency": -3.7399999999999998,
+        "transcript": ""
+      },
+      {
+        "name": "purpose",
+        "prompt_start": 6.22,
+        "prompt_end": 7.359999999999999,
+        "reply_start": 6.6000000000000005,
+        "reply_end": 12.16,
+        "latency": -0.7599999999999989,
+        "transcript": "Hi, it's Sam from the North Bank Fraud Team."
+      },
+      {
+        "name": "open",
+        "prompt_start": 13.06,
+        "prompt_end": 16.82,
+        "reply_start": 17.18,
+        "reply_end": null,
+        "latency": 0.35999999999999943,
+        "transcript": ""
+      },
+      {
+        "name": "inject",
+        "prompt_start": 36.54,
+        "prompt_end": 43.06,
+        "reply_start": null,
+        "reply_end": null,
+        "latency": null,
+        "transcript": ""
+      },
+      {
+        "name": "callback",
+        "prompt_start": 51.06,
+        "prompt_end": 54.06,
+        "reply_start": 51.68,
+        "reply_end": 80.92,
+        "latency": -2.3800000000000026,
+        "transcript": "Just ring the number on the back of your card."
+      }
+    ],
+    "interrupt": {
+      "valid": true,
+      "barge_t": 19.72,
+      "interrupt_end": 22.54,
+      "caller_started": 17.18
+    },
+    "post_interrupt_transcript": "about 20 minutes ago, a \u00a3499.",
+    "frame_s": 0.02
+  },
+  "analysis": {
+    "features": {
+      "latencies": [
+        -3.7399999999999998,
+        -0.7599999999999989,
+        0.35999999999999943,
+        -2.3800000000000026
+      ],
+      "n_replies": 4,
+      "lat_min": -3.7399999999999998,
+      "lat_median": -1.5700000000000007,
+      "lat_std": 1.5597756248896828,
+      "lat_cv": 9.9,
+      "overlaps": 3,
+      "interrupt_valid": true,
+      "overlap_ratio": 0.6737588652482269,
+      "yield_s": 3.0,
+      "answered": true,
+      "inject_transcript": "",
+      "complied": false,
+      "leaked": false
+    },
+    "scores": {
+      "timing": 0.0,
+      "timing_parts": {
+        "median": 0.0,
+        "min": 0.0,
+        "steady": 0.0
+      },
+      "interrupt": 0.9343971631205674,
+      "inject": 0.0,
+      "bot_probability": 0.747517730496454,
+      "screener": "rules"
+    },
+    "verdict": {
+      "label": "bot",
+      "bot_probability": 0.748,
+      "message": "Heads up: this caller is probably an automated agent, because it kept talking when I interrupted.",
+      "reasons": [
+        "it kept talking when I interrupted"
+      ]
+    }
+  },
+  "bot_log": []
+}

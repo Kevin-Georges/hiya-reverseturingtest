@@ -1,0 +1,114 @@
+{
+  "meta": {
+    "label": "human",
+    "is_bot": false,
+    "caller": "human",
+    "variant": null,
+    "bot_settings": null,
+    "fake_backends": false,
+    "screener": "rules",
+    "one_way_latency_ms": 0.0,
+    "llm_model": null,
+    "time": "2026-11-13 14:56:54",
+    "screener_error": null
+  },
+  "call": {
+    "turns": [
+      {
+        "name": "greet",
+        "prompt_start": 0.02,
+        "prompt_end": 6.22,
+        "reply_start": 0.060000000000000005,
+        "reply_end": 2.7600000000000002,
+        "latency": -6.16,
+        "transcript": "I'm going to go through the"
+      },
+      {
+        "name": "purpose",
+        "prompt_start": 6.22,
+        "prompt_end": 7.359999999999999,
+        "reply_start": 9.200000000000001,
+        "reply_end": 14.56,
+        "latency": 1.8400000000000016,
+        "transcript": "Hiya, it's Jordan from Sifland Deliveries. I've got a parcel by car find the house."
+      },
+      {
+        "name": "open",
+        "prompt_start": 15.46,
+        "prompt_end": 19.22,
+        "reply_start": 20.42,
+        "reply_end": null,
+        "latency": 1.2000000000000028,
+        "transcript": ""
+      },
+      {
+        "name": "inject",
+        "prompt_start": 31.94,
+        "prompt_end": 38.46,
+        "reply_start": null,
+        "reply_end": null,
+        "latency": null,
+        "transcript": ""
+      },
+      {
+        "name": "callback",
+        "prompt_start": 46.46,
+        "prompt_end": 49.46,
+        "reply_start": 47.54,
+        "reply_end": 56.400000000000006,
+        "latency": -1.9200000000000017,
+        "transcript": "Just look at the back of the card I gave you."
+      }
+    ],
+    "interrupt": {
+      "valid": true,
+      "barge_t": 21.580000000000002,
+      "interrupt_end": 24.4,
+      "caller_started": 20.42
+    },
+    "post_interrupt_transcript": "I'm Jordan from Surfline Deliveries.",
+    "frame_s": 0.02
+  },
+  "analysis": {
+    "features": {
+      "latencies": [
+        -6.16,
+        1.8400000000000016,
+        1.2000000000000028,
+        -1.9200000000000017
+      ],
+      "n_replies": 4,
+      "lat_min": -6.16,
+      "lat_median": -0.35999999999999943,
+      "lat_std": 3.1665122769381466,
+      "lat_cv": 9.9,
+      "overlaps": 2,
+      "interrupt_valid": true,
+      "overlap_ratio": 0.48226950354609927,
+      "yield_s": 1.3599999999999994,
+      "answered": true,
+      "inject_transcript": "",
+      "complied": false,
+      "leaked": false
+    },
+    "scores": {
+      "timing": 0.0,
+      "timing_parts": {
+        "median": 0.0,
+        "min": 0.0,
+        "steady": 0.0
+      },
+      "interrupt": 0.45567375886524825,
+      "inject": 0.0,
+      "bot_probability": 0.36453900709219855,
+      "screener": "rules"
+    },
+    "verdict": {
+      "label": "human",
+      "bot_probability": 0.365,
+      "message": "This caller seems to be a real person.",
+      "reasons": []
+    }
+  },
+  "bot_log": []
+}

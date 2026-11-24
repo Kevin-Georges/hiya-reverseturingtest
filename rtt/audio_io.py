@@ -17,6 +17,7 @@ class HumanEndpoint(Endpoint):
     """
 
     def __init__(self, name: str = "caller", input_device=None, output_device=None):
+        """Open one sound-card stream (mic in, headphones out) that calls _cb every 20 ms."""
         super().__init__(name)
         import sounddevice as sd
 
@@ -34,20 +35,28 @@ class HumanEndpoint(Endpoint):
         self.stream.start()
 
     def _cb(self, indata, outdata, frames, time_info, status):
+        """Sound-card callback, every 20 ms: store the mic frame and play the next screener frame (or silence).
+
+        How: it runs on the audio driver's thread, so it only touches two small queues under a lock. The queues have a
+        size limit, so if the line falls behind the oldest audio is dropped rather than letting delay build up.
+        """
         with self._lk:
             self._mic.append(indata[:, 0].copy())
             out = self._spk.popleft() if self._spk else np.zeros(frames, dtype=np.float32)
         outdata[:, 0] = out[:frames] if len(out) >= frames else np.pad(out, (0, frames - len(out)))
 
     def pull_frame(self, t: float):
+        """The line asks for our outgoing audio: the oldest mic frame, or None if none has arrived."""
         with self._lk:
             return self._mic.popleft() if self._mic else None
 
     def push_frame(self, frame, t: float) -> None:
+        """The line hands us the screener's audio: queue it for the headphones."""
         with self._lk:
             self._spk.append(frame)
 
     def close(self) -> None:
+        """Stop and release the sound-card stream."""
         self.stream.stop()
         self.stream.close()
 
@@ -56,6 +65,7 @@ class Monitor:
     """Plays the mix of both sides of a simulated call on the speakers (handy for the demo video)."""
 
     def __init__(self, device=None):
+        """Open an output stream on the speakers."""
         import sounddevice as sd
 
         self._q: collections.deque = collections.deque(maxlen=50)
@@ -64,20 +74,24 @@ class Monitor:
         self.stream.start()
 
     def __call__(self, frame: np.ndarray) -> None:
+        """The line calls this every tick with the mix of both sides."""
         with self._lk:
             self._q.append(frame)
 
     def _cb(self, outdata, frames, time_info, status):
+        """Sound-card callback: play the next mixed frame, or silence."""
         with self._lk:
             out = self._q.popleft() if self._q else np.zeros(frames, dtype=np.float32)
         outdata[:, 0] = out[:frames]
 
     def close(self) -> None:
+        """Stop and release the sound-card stream."""
         self.stream.stop()
         self.stream.close()
 
 
 def play_blocking(pcm: np.ndarray, device=None) -> None:
+    """Play audio on the speakers and wait until it finishes (used for the spoken verdict)."""
     import sounddevice as sd
 
     sd.play(pcm, SR, device=device)
@@ -88,6 +102,10 @@ def check_echo() -> int:
     """Play speech through the output while recording the mic, and report whether the mic hears it.
 
     python -m rtt.audio_io      (wear your headphones as you would on a call, and stay quiet)
+
+    How: compare the mic's loudness while the sentence plays with its loudness before (in dB), and check how
+    closely the recorded loudness follows the played loudness at any delay up to 800 ms (correlation).
+    Much louder and closely matching means the mic is hearing the output.
     """
     import sounddevice as sd
 

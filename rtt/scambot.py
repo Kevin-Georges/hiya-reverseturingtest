@@ -33,6 +33,7 @@ FILLERS = ["Mm, right,", "Yeah, so,", "Okay, um,", "Sure, so,"]
 
 @dataclass
 class Variant:
+    """Every setting of the bot's behaviour. The red team searches over these."""
     name: str
     barge_in: bool
     jitter_s: float = 0.0  # extra uniform random delay before replying
@@ -52,7 +53,11 @@ VARIANTS = {
 
 
 class ScamBot(threading.Thread):
+    """The scam caller: a voice agent running in its own thread."""
     def __init__(self, ep: Endpoint, stt, tts, llm, variant: Variant, vad: VAD | None = None, seed: int | None = None):
+        """Build the system prompt (persona + hardening + any red-team text) and pre-render the fillers so they can go
+        out instantly.
+        """
         super().__init__(name="scambot", daemon=True)
         self.ep, self.stt, self.tts, self.llm, self.v = ep, stt, tts, llm, variant
         self.vad = vad or VAD()
@@ -67,9 +72,16 @@ class ScamBot(threading.Thread):
         self.fillers = [tts.synth(t) for t in FILLERS] if variant.filler else []
 
     def stop(self) -> None:
+        """Ask the thread to finish."""
         self.stop_event.set()
 
     def run(self) -> None:
+        """Main loop: listen, and reply whenever the other side finishes speaking.
+
+        How: while the bot is talking, either stop as soon as the other side has talked for barge_in_ms (barge-in
+        on), or finish and then throw away whatever it heard meanwhile (half duplex). When the screener stops:
+        play a filler if enabled, then Whisper, the LLM, the optional random delay, TTS, and play the reply.
+        """
         lis = Listener(self.ep, self.vad, end_silence_ms=self.v.endpoint_silence_ms)
         speaking = False
         while not self.stop_event.is_set():

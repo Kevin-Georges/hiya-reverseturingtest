@@ -14,6 +14,7 @@ class VAD:
     """WebRTC VAD with an energy gate in front of it (falls back to energy only if not installed)."""
 
     def __init__(self, aggressiveness: int = 2, energy_gate: float = 0.004):
+        """aggressiveness 0-3 (higher ignores more noise); a frame quieter than energy_gate is never speech."""
         self.energy_gate = energy_gate
         try:
             import webrtcvad
@@ -23,6 +24,9 @@ class VAD:
             self._vad = None
 
     def is_speech(self, frame: np.ndarray) -> bool:
+        """Is this 20 ms frame speech? Too quiet: no. Otherwise ask WebRTC VAD, or use a loudness threshold if it
+        isn't installed.
+        """
         rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
         if rms < self.energy_gate:
             return False
@@ -34,6 +38,7 @@ class VAD:
 
 @dataclass
 class Segment:
+    """One stretch of speech: start, end and its audio."""
     start: float  # line time of first voiced frame
     end: float  # line time just after last voiced frame
     audio: np.ndarray
@@ -44,6 +49,9 @@ class Listener:
     and emits ('start', t) and ('end', Segment) events."""
 
     def __init__(self, endpoint, vad: VAD, start_ms: int = 60, end_silence_ms: int = 800, preroll_ms: int = 200):
+        """start_ms of speech starts a segment, end_silence_ms of silence ends it, and preroll_ms of audio before the
+        start is kept.
+        """
         self.ep = endpoint
         self.vad = vad
         self.start_frames = max(1, int(start_ms / 1000 / FRAME_S))
@@ -65,11 +73,19 @@ class Listener:
         self._pre.clear()
 
     def speech_so_far(self) -> float:
+        """How long the current speech has lasted, in seconds (0 if nobody is talking)."""
         if not self.in_speech or self.seg_start is None or self.last_voiced is None:
             return 0.0
         return self.last_voiced + FRAME_S - self.seg_start
 
     def step(self, timeout: float = 0.05) -> list:
+        """Process every frame that has arrived; return ('start', t) and ('end', Segment) events.
+
+        How: a two-state machine. Not in speech: keep a short buffer of recent frames and count voiced frames in a
+        row; after start_ms of them, start a segment (backdated to its first voiced frame, buffered frames included).
+        In speech: collect frames; after end_silence_ms of silence, emit the segment with trailing silence trimmed.
+        Every frame's speech yes/no is also added to `timeline` for scoring later.
+        """
         events: list = []
         try:
             items = [self.ep.incoming.get(timeout=timeout)]
@@ -115,6 +131,7 @@ class Listener:
 
 
 def voiced_arrays(timeline: list[tuple[float, bool]]) -> tuple[np.ndarray, np.ndarray]:
+    """Split a timeline into numpy arrays of frame times and speech flags."""
     if not timeline:
         return np.zeros(0), np.zeros(0, dtype=bool)
     t = np.array([x[0] for x in timeline])

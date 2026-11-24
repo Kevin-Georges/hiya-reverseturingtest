@@ -31,6 +31,7 @@ class Endpoint:
     """One side of a call. The line pulls one outgoing frame and pushes one incoming frame per tick."""
 
     def __init__(self, name: str):
+        """Empty outgoing queue of (utterance, frame, is_last), and an incoming queue that the line fills."""
         self.name = name
         self._out: collections.deque = collections.deque()
         self._lock = threading.Lock()
@@ -42,6 +43,11 @@ class Endpoint:
 
     # ---- called by the line thread -------------------------------------------------------
     def pull_frame(self, t: float) -> np.ndarray | None:
+        """Line thread, every tick: hand over the next outgoing frame (None if we're silent).
+
+        How: also stamps an utterance's real start time on its first frame, and its end time on its last frame
+        (marking it done), so the screener knows exactly when its question finished on the line.
+        """
         with self._lock:
             self._last_pull_t = t
             if not self._out:
@@ -57,10 +63,12 @@ class Endpoint:
             return frame
 
     def push_frame(self, frame: np.ndarray, t: float) -> None:
+        """Line thread, every tick: deliver one incoming frame with its line time."""
         self.incoming.put((t, frame))
 
     # ---- called by the agent --------------------------------------------------------------
     def play(self, pcm: np.ndarray, text: str = "") -> Utterance:
+        """Queue audio to send, frame by frame. Returns at once, with an Utterance whose times fill in as it plays."""
         utt = Utterance(text=text)
         frames = to_frames(pcm) or [silence()]
         with self._lock:
@@ -70,7 +78,11 @@ class Endpoint:
         return utt
 
     def stop_playback(self) -> Utterance | None:
-        """Barge-in: drop everything still queued. Returns the utterance that was cut, if any."""
+        """Barge-in: drop everything still queued. Returns the utterance that was cut, if any.
+
+        How: under the lock, note the utterance that is mid-play, clear the queue, mark it cut with its real end
+        time, and mark any queued-but-unplayed utterances done too, so nothing waiting on them hangs.
+        """
         with self._lock:
             cut = self._current
             pending = {id(u): u for u, _, _ in self._out}
@@ -87,20 +99,18 @@ class Endpoint:
             return cut
 
     def is_playing(self) -> bool:
+        """True while frames are still queued to send."""
         with self._lock:
             return bool(self._out)
 
     def now(self) -> float:
+        """Current line time in seconds."""
         return self.line.now() if self.line else 0.0
 
     @property
     def clock(self) -> Clock:
+        """The line's clock (sped up in fake runs)."""
         return self.line.clock if self.line else Clock()
-
-    def wait_done(self, utt: Utterance, stop: threading.Event | None = None) -> None:
-        while not utt.done.wait(0.02):
-            if stop is not None and stop.is_set():
-                return
 
 
 class PhoneLine:
@@ -114,6 +124,9 @@ class PhoneLine:
         clock: Clock | None = None,
         monitor=None,
     ):
+        """Connect two endpoints. The one-way delay becomes a queue of silent frames in each direction (60 ms = 3
+        frames).
+        """
         self.a, self.b = a, b
         a.line = b.line = self
         self.clock = clock or Clock()
@@ -129,19 +142,29 @@ class PhoneLine:
 
     @property
     def one_way_latency_s(self) -> float:
+        """The actual one-way delay, rounded to whole frames."""
         return self.delay_frames * FRAME_S
 
     def now(self) -> float:
+        """Line time: ticks so far x 20 ms."""
         return self._idx * FRAME_S
 
     def start(self) -> None:
+        """Start the tick thread."""
         self._thread.start()
 
     def stop(self) -> None:
+        """Stop the tick thread and wait for it (up to 2 s)."""
         self._stop.set()
         self._thread.join(timeout=2)
 
     def _run(self) -> None:
+        """The line itself: every 20 ms, move one frame each way.
+
+        How: pull a frame from each side (silence if none), record both, push each into its delay queue and deliver
+        the frame coming out of the other end. Each tick is scheduled from the start time (t0 + n x 20 ms) rather
+        than 'sleep 20 ms', so a late tick is caught up instead of the line drifting.
+        """
         t0 = self.clock.perf()
         tick = FRAME_S / self.clock.speed
         while not self._stop.is_set():

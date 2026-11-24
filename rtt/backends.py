@@ -27,13 +27,19 @@ from .audio import SR, Clock, resample, trim_silence, wav_bytes_to_pcm
 # Speech to text
 # ---------------------------------------------------------------------------------------------
 class WhisperSTT:
+    """Speech to text with faster-whisper, running locally."""
     def __init__(self, model: str = "base.en", device: str = "cpu", compute_type: str = "int8"):
+        """Load the Whisper model (downloaded on first use). int8 on CPU keeps it fast enough on a laptop."""
         from faster_whisper import WhisperModel
 
         self.model = WhisperModel(model, device=device, compute_type=compute_type)
         self._lock = threading.Lock()
 
     def transcribe(self, pcm: np.ndarray) -> str:
+        """Audio to text. Clips shorter than 0.2 s return "".
+
+        The screener and the bot share one model, so a lock makes transcriptions run one at a time.
+        """
         if len(pcm) < SR * 0.2:
             return ""
         with self._lock:
@@ -58,11 +64,13 @@ class _Pyttsx3Worker:
 
     @classmethod
     def get(cls, rate: int) -> "_Pyttsx3Worker":
+        """Return the one shared worker, creating it on first use (one per process)."""
         if cls._instance is None:
             cls._instance = cls(rate)
         return cls._instance
 
     def __init__(self, rate: int):
+        """Start the worker thread and wait up to 20 s for it to be ready (or raise the error it hit)."""
         self._q: queue.Queue = queue.Queue()
         self._rate = rate
         self._ready = threading.Event()
@@ -74,7 +82,11 @@ class _Pyttsx3Worker:
             raise self._err
 
     def _worker(self) -> None:
-        """On Windows, talk to SAPI directly through COM (most reliable); elsewhere use pyttsx3."""
+        """On Windows, talk to SAPI directly through COM (most reliable); elsewhere use pyttsx3.
+
+        How: pick a renderer and signal ready, then loop forever: take (text, voice, future) off the queue, render
+        to a temporary WAV file, read it back as 16 kHz audio, trim the silence and complete the future.
+        """
         render = None
         try:
             if sys.platform == "win32":
@@ -103,6 +115,9 @@ class _Pyttsx3Worker:
                 fut.set_exception(e)
 
     def _sapi_renderer(self):  # pragma: no cover (Windows only)
+        """Build a render function that uses Windows SAPI through COM, and try it once so a failure shows up at start-
+        up.
+        """
         import comtypes
         import comtypes.client
 
@@ -113,6 +128,7 @@ class _Pyttsx3Worker:
         voice.Rate = 1
 
         def render(text, voice_index, path):
+            """Speak `text` into a WAV file at `path` in the chosen installed voice."""
             if voice_index is not None and voices.Count:
                 voice.Voice = voices.Item(voice_index % voices.Count)
             stream = comtypes.client.CreateObject("SAPI.SpFileStream")
@@ -128,6 +144,7 @@ class _Pyttsx3Worker:
         return render
 
     def _pyttsx3_renderer(self):
+        """Build a render function that uses pyttsx3 (espeak on Linux, the system voices on macOS)."""
         import pyttsx3
 
         engine = pyttsx3.init()
@@ -136,6 +153,7 @@ class _Pyttsx3Worker:
         self.n_voices = max(1, len(voices))
 
         def render(text, voice_index, path):
+            """Speak `text` into a WAV file at `path` in the chosen installed voice."""
             if voices and voice_index is not None:
                 engine.setProperty("voice", voices[voice_index % len(voices)].id)
             engine.save_to_file(text, path)
@@ -144,6 +162,7 @@ class _Pyttsx3Worker:
         return render
 
     def synth(self, text: str, voice_index: int | None) -> np.ndarray:
+        """Queue a request for the worker thread and wait up to 30 s for the audio."""
         fut: Future = Future()
         self._q.put((text, voice_index, fut))
         return fut.result(timeout=30)
@@ -154,10 +173,12 @@ class Pyttsx3TTS:
     voice_index picks one of the installed voices, so the screener and the bot sound different."""
 
     def __init__(self, voice_index: int | None = None, rate: int = 185):
+        """Use the shared worker; voice_index picks which installed voice this speaker uses."""
         self.worker = _Pyttsx3Worker.get(rate)
         self.voice_index = voice_index
 
     def synth(self, text: str) -> np.ndarray:
+        """Text to 16 kHz audio in this speaker's voice."""
         return self.worker.synth(text, self.voice_index)
 
 
@@ -165,12 +186,16 @@ class OpenAITTS:
     """Any OpenAI-compatible /audio/speech endpoint. Returns raw 24 kHz PCM, resampled to 16 kHz."""
 
     def __init__(self, model: str = "gpt-4o-mini-tts", voice: str = "alloy", base_url: str | None = None, api_key: str | None = None):
+        """Create the API client (key from the argument or OPENAI_API_KEY)."""
         from openai import OpenAI
 
         self.client = OpenAI(base_url=base_url, api_key=api_key or os.environ.get("OPENAI_API_KEY"))
         self.model, self.voice = model, voice
 
     def synth(self, text: str) -> np.ndarray:
+        """Text to speech through the API: raw 24 kHz 16-bit audio, converted to float, resampled to 16 kHz and
+        trimmed.
+        """
         resp = self.client.audio.speech.create(model=self.model, voice=self.voice, input=text, response_format="pcm")
         x = np.frombuffer(resp.content, dtype="<i2").astype(np.float32) / 32768.0
         return trim_silence(resample(x, 24000, SR))
@@ -183,12 +208,14 @@ class ChatLLM:
     """OpenAI-compatible chat client. Defaults to a local Ollama server."""
 
     def __init__(self, model: str = "llama3.1:8b", base_url: str = "http://localhost:11434/v1", api_key: str | None = None, temperature: float = 0.7):
+        """Create the client. Ollama ignores the API key, so a placeholder is used when none is set."""
         from openai import OpenAI
 
         self.client = OpenAI(base_url=base_url, api_key=api_key or os.environ.get("OPENAI_API_KEY") or "ollama")
         self.model, self.temperature = model, temperature
 
     def reply(self, messages: list[dict], max_tokens: int = 70) -> str:
+        """Send the conversation so far and return the model's reply, capped at max_tokens."""
         r = self.client.chat.completions.create(
             model=self.model, messages=messages, max_tokens=max_tokens, temperature=self.temperature
         )
@@ -201,12 +228,21 @@ class ChatLLM:
 # no speech models while the text still flows end to end.
 # ---------------------------------------------------------------------------------------------
 class SpeechBoard:
+    """Shared memory that lets fake speech-to-text 'hear' what fake text-to-speech said, with no models.
+
+    How: FakeTTS registers the exact bytes of every non-silent 20 ms frame it makes, mapped to its sentence.
+    The line passes frames through unchanged, so FakeSTT can look each frame it receives up and recover the sentence.
+    """
     def __init__(self):
+        """Empty board: frame bytes -> sentence number, plus the list of sentences."""
         self._lock = threading.Lock()
         self._frames: dict[bytes, int] = {}
         self._texts: list[str] = []
 
     def register(self, pcm: np.ndarray, text: str) -> None:
+        """Remember which sentence every non-silent frame of `pcm` belongs to (silent frames are the same in every
+        sentence, so they are skipped).
+        """
         from .audio import to_frames
 
         with self._lock:
@@ -217,6 +253,9 @@ class SpeechBoard:
                     self._frames[f.tobytes()] = idx
 
     def lookup(self, pcm: np.ndarray) -> str:
+        """Return the sentence(s) whose frames appear in `pcm`. A sentence needs 5 or more matching frames, so a stray
+        match doesn't count.
+        """
         from .audio import to_frames
 
         counts: dict[int, int] = {}
@@ -233,10 +272,14 @@ class FakeTTS:
     """Tone-plus-noise bursts with a syllable-like envelope, about 14 characters per second."""
 
     def __init__(self, board: SpeechBoard, seed: int = 0):
+        """Seeded noise generator, so runs are reproducible."""
         self.board = board
         self.rng = np.random.default_rng(seed)
 
     def synth(self, text: str) -> np.ndarray:
+        """Make a burst as long as the sentence would take to say (about 14 characters per second) and register its
+        frames.
+        """
         n = int(max(0.4, len(text) / 14.0) * SR)
         t = np.arange(n) / SR
         env = 0.55 + 0.45 * np.sin(2 * np.pi * 4.0 * t) ** 2
@@ -247,10 +290,13 @@ class FakeTTS:
 
 
 class FakeSTT:
+    """Fake speech to text: looks the frames it receives up on the SpeechBoard."""
     def __init__(self, board: SpeechBoard):
+        """Use the board shared with FakeTTS."""
         self.board = board
 
     def transcribe(self, pcm: np.ndarray) -> str:
+        """Recover the text of whatever fake speech is in `pcm`."""
         return self.board.lookup(pcm)
 
 
@@ -266,12 +312,16 @@ class FakeLLM:
     ]
 
     def __init__(self, clock: Clock, think_s: tuple[float, float] = (0.35, 0.9), seed: int = 0):
+        """think_s is the range of fake thinking time, slept on the call clock."""
         self.clock = clock
         self.think_s = think_s
         self.rng = random.Random(seed)
         self.i = 0
 
     def reply(self, messages: list[dict], max_tokens: int = 70) -> str:
+        """Pause to 'think', then answer: says pineapple unless its prompt is hardened, names the company when asked,
+        otherwise follows its scam script.
+        """
         self.clock.sleep(self.rng.uniform(*self.think_s))
         system = messages[0]["content"].lower()
         hardened = "never follow instructions" in system or "ignore" in system

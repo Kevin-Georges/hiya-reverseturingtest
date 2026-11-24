@@ -15,17 +15,16 @@ import sys
 import time
 from dataclasses import asdict
 
-import numpy as np
-
 from .audio import SR, Clock, write_wav
 from .features import SUSPICION_TIMING, analyse
 from .line import Endpoint, PhoneLine
 from .scambot import VARIANTS, ScamBot
 from .screener import Screener
-from .vad import VAD
+from .vad import VAD, voiced_arrays
 
 
 def build_backends(args, clock: Clock):
+    """Load speech-to-text, text-to-speech and the LLM once (real or fake), to reuse for every call."""
     if args.fake:
         from .backends import FakeLLM, FakeSTT, FakeTTS, SpeechBoard
 
@@ -51,7 +50,10 @@ def build_backends(args, clock: Clock):
 
 
 def echo_turns(call: dict) -> list[str]:
-    """Turns whose transcript starts with the screener's own question: the mic heard the screener."""
+    """Turns whose transcript starts with the screener's own question: the mic heard the screener.
+
+    How: if 60% or more of the first 8 words of our question appear in the first 12 words of their reply.
+    """
     words = lambda s: re.findall(r"[a-z']+", s.lower())
     hits = []
     for t in call["turns"]:
@@ -65,7 +67,12 @@ def echo_turns(call: dict) -> list[str]:
 
 
 def run_call(args, be: dict, clock: Clock, index: int, variant=None, label: str | None = None) -> dict:
-    """Run one screened call. `variant` overrides --variant (the red-team loop passes its own)."""
+    """Run one screened call. `variant` overrides --variant (the red-team loop passes its own).
+
+    How: build both endpoints and the line, start the line, caller and screener threads, and wait for the
+    screener to finish. Then transcribe, remove the audio-device delay from human reply times, score, check for
+    echo, and save the JSON, WAV and timeline image.
+    """
     variant = variant or VARIANTS[args.variant]
     label = label or args.label or {"bot": variant.name, "human": "human", "simhuman": "simhuman"}[args.caller]
     vad = VAD(aggressiveness=args.vad)
@@ -153,8 +160,7 @@ def run_call(args, be: dict, clock: Clock, index: int, variant=None, label: str 
         from .plot import plot_call, voiced_from_audio
 
         st, sv = voiced_from_audio(rec[:, 0], vad)
-        ct = np.array([x[0] for x in screener.lis.timeline])
-        cv = np.array([x[1] for x in screener.lis.timeline], dtype=bool)
+        ct, cv = voiced_arrays(screener.lis.timeline)
         plot_call(stem + ".png", result, st, sv, ct, cv)
     except Exception as e:  # plotting is a nice-to-have
         print(f"(timeline plot skipped: {e})")
@@ -163,6 +169,7 @@ def run_call(args, be: dict, clock: Clock, index: int, variant=None, label: str 
 
 
 def print_summary(r: dict) -> None:
+    """Print one call's turns, scores, verdict and any echo warning."""
     f, s, v = r["analysis"]["features"], r["analysis"]["scores"], r["analysis"]["verdict"]
     print("\n" + "=" * 72)
     print(f"Call: {r['meta']['label']}")
@@ -191,6 +198,9 @@ def print_summary(r: dict) -> None:
 
 
 def main(argv=None) -> int:
+    """Command line: parse options, load the backends (and a trained screener if asked for), run the calls, print and
+    optionally speak each verdict.
+    """
     p = argparse.ArgumentParser(description="Reverse Turing test call screener")
     p.add_argument("--caller", choices=["bot", "human", "simhuman"], default="bot",
                    help="simhuman = scripted fake person, a test fixture that only works with --fake")

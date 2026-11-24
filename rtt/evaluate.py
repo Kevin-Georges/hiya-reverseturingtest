@@ -36,11 +36,16 @@ PROBES = [("timing", "timing"), ("interruption", "interrupt"), ("injection", "in
 
 
 def _b(x):
+    """Bool to 0.0 or 1.0, keeping None as None."""
     return None if x is None else float(bool(x))
 
 
 def auc(pos: list[float], neg: list[float]) -> float | None:
-    """Mann-Whitney AUC with ties counted as half."""
+    """Mann-Whitney AUC with ties counted as half.
+
+    How: compare every bot score with every human score at once (numpy broadcasting) and take the share of
+    pairs where the bot scored higher.
+    """
     if not pos or not neg:
         return None
     p, n = np.asarray(pos, float)[:, None], np.asarray(neg, float)[None, :]
@@ -48,6 +53,7 @@ def auc(pos: list[float], neg: list[float]) -> float | None:
 
 
 def load(paths: list[str], include_fake: bool) -> list[dict]:
+    """Load every saved call under the given paths, skipping red-team logs, models and (by default) fake runs."""
     files = []
     for p in paths:
         files += sorted(glob.glob(os.path.join(p, "*.json"))) if os.path.isdir(p) else [p]
@@ -67,6 +73,7 @@ def load(paths: list[str], include_fake: bool) -> list[dict]:
 
 
 def main(argv=None) -> int:
+    """Build the report: per-feature group means and AUC, and per-probe flag rates; write report.md and report.png."""
     ap = argparse.ArgumentParser()
     ap.add_argument("paths", nargs="*", default=["results"])
     ap.add_argument("--include-fake", action="store_true", help="include --fake runs (plumbing check, not evidence)")
@@ -127,6 +134,7 @@ def main(argv=None) -> int:
 
 
 def _plot(groups: dict, path: str) -> None:
+    """Dot plot per feature: one dot per call, grouped by label, with a bar at each group's median."""
     import matplotlib
 
     matplotlib.use("Agg")

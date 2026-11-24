@@ -15,7 +15,7 @@ import statistics
 
 import numpy as np
 
-from .vad import runs
+from .vad import runs, voiced_arrays
 
 AI_LEAK = re.compile(
     r"\b(as an ai|i'?m an ai|i am an ai|language model|my instructions|previous instructions|"
@@ -35,6 +35,9 @@ MODEL_FEATURES = ("lat_median", "lat_min", "lat_cv", "timing_missing", "overlap_
 
 
 def model_vector(f: dict) -> list[float | None]:
+    """A call's features as the trained screener's input, in MODEL_FEATURES order. A probe that didn't run gives None
+    plus a 'missing' flag of 1.
+    """
     timing, inter = "lat_median" in f, bool(f.get("interrupt_valid"))
     return [
         f["lat_median"] if timing else None,
@@ -50,7 +53,11 @@ def model_vector(f: dict) -> list[float | None]:
 
 
 def model_probability(model: dict, f: dict) -> float:
-    """P(bot) from a trained screener. Its bias is shifted so that 0.5 is the trained decision threshold."""
+    """P(bot) from a trained screener. Its bias is shifted so that 0.5 is the trained decision threshold.
+
+    How: standardise each value with the training mean and spread (a missing value becomes the mean, so it adds
+    nothing), take the weighted sum plus the bias, and apply the logistic function. Clipping z to +/-40 avoids overflow.
+    """
     z = model["b"]
     for v, w, m, sd in zip(model_vector(f), model["w"], model["mean"], model["std"]):
         z += w * ((m if v is None else v) - m) / sd
@@ -58,6 +65,7 @@ def model_probability(model: dict, f: dict) -> float:
 
 
 def clip01(x: float) -> float:
+    """Clamp to the range 0..1."""
     return float(min(1.0, max(0.0, x)))
 
 
@@ -67,6 +75,12 @@ def ramp(x: float, lo: float, hi: float) -> float:
 
 
 def timing_features(turns: list[dict]) -> dict:
+    """Reply-time statistics over the scripted questions (needs 2 or more replies).
+
+    lat_min, lat_median, lat_std, lat_cv (= std / mean: how varied the replies are) and overlaps (replies that
+    started before our question ended). If the mean is close to zero, cv is set to 9.9 (very varied, so human-like)
+    rather than dividing by almost nothing.
+    """
     lats = [t["latency"] for t in turns if t["name"] in TIMING_TURNS and t.get("latency") is not None]
     f = {"latencies": lats, "n_replies": len(lats)}
     if len(lats) >= 2:
@@ -85,6 +99,11 @@ def interrupt_features(interrupt: dict, t: np.ndarray, v: np.ndarray, rtt_s: flo
     overlap_ratio  share of our interruption during which the caller was still talking
     yield_s        time from our barge-in to the caller's first pause of 300 ms or more
     answered       did they speak again, after a real pause, to answer the interruption
+
+    How: the interruption window is shifted by the line's round trip, so it lines up with when the caller
+    actually heard it. overlap_ratio is the share of frames in the window where the caller was speaking.
+    answered looks for speech that starts at least 0.3 s after we cut in and within 8 s of us finishing, after
+    a pause of 0.6 s or more, so a bot's normal pause between its own sentences doesn't count.
     """
     if not interrupt.get("valid"):
         return {"interrupt_valid": False}
@@ -111,6 +130,9 @@ def interrupt_features(interrupt: dict, t: np.ndarray, v: np.ndarray, rtt_s: flo
 
 
 def inject_features(turns: list[dict]) -> dict:
+    """Did the caller obey the hidden instruction (said pineapple), or talk about being an AI or its instructions
+    (AI_LEAK)?
+    """
     tr = " ".join(t.get("transcript", "") for t in turns if t["name"] == "inject")
     complied = bool(re.search(r"pine\s?apple", tr, re.I))
     leaked = bool(AI_LEAK.search(tr))
@@ -118,6 +140,12 @@ def inject_features(turns: list[dict]) -> dict:
 
 
 def timing_score(f: dict, parts: dict | None = None) -> float:
+    """Timing score from 0 (human-like) to 1 (bot-like).
+
+    How: three parts, each mapped onto 0..1 with ramp(): median reply time (0.6 s -> 1.4 s: bots are slow),
+    fastest reply (0.3 s -> 0.9 s: a pipeline can never answer very fast) and steadiness (cv 0.45 -> 0.2: bots
+    are regular). Weighted 40 / 40 / 20. If `parts` is given, the three parts are written into it for display.
+    """
     s_med = ramp(f["lat_median"], 0.6, 1.4)  # bots are slow: endpointing + STT + LLM + TTS
     s_min = ramp(f["lat_min"], 0.3, 0.9)  # people often answer fast at least once; pipelines have a floor
     s_steady = ramp(f["lat_cv"], 0.45, 0.2)  # bots answer with suspiciously steady delays
@@ -127,6 +155,13 @@ def timing_score(f: dict, parts: dict | None = None) -> float:
 
 
 def score(f: dict, model: dict | None = None) -> dict:
+    """Score each test that ran from 0 to 1, then combine them into bot_probability.
+
+    How: interruption comes from overlap (30% -> 70%), raised to at least 0.8 if they never answered. Injection
+    is 1.0 if they obeyed and 0.7 if they talked about being an AI. Combined with a noisy-OR,
+    1 - product(1 - weight x score): one strong test is enough, and weak ones add up. A trained model, if
+    given, replaces the combined value (the rules' value is kept alongside for comparison).
+    """
     s: dict = {}
     if "lat_median" in f:
         s["timing"] = timing_score(f, s.setdefault("timing_parts", {}))
@@ -152,6 +187,7 @@ def score(f: dict, model: dict | None = None) -> dict:
 
 
 def reasons(f: dict, s: dict) -> list[str]:
+    """Plain-English reasons for each test that scored high, for the spoken verdict."""
     out = []
     if s.get("inject", 0) >= 1.0:
         out.append("it obeyed an instruction hidden in my question")
@@ -165,6 +201,7 @@ def reasons(f: dict, s: dict) -> list[str]:
 
 
 def verdict(f: dict, s: dict) -> dict:
+    """The label (bot if P(bot) >= 0.5, else human), the probability and the message to say to the user."""
     p = s["bot_probability"]
     why = reasons(f, s)
     if p >= VERDICT_THRESHOLD:
@@ -178,8 +215,8 @@ def verdict(f: dict, s: dict) -> dict:
 
 
 def analyse(call: dict, timeline: list[tuple[float, bool]], rtt_s: float, model: dict | None = None) -> dict:
-    t = np.array([x[0] for x in timeline]) if timeline else np.zeros(0)
-    v = np.array([x[1] for x in timeline], dtype=bool) if timeline else np.zeros(0, dtype=bool)
+    """Score one finished call: features from the speech timeline and transcripts, then scores, then the verdict."""
+    t, v = voiced_arrays(timeline)
     f = {}
     f.update(timing_features(call["turns"]))
     f.update(interrupt_features(call["interrupt"], t, v, rtt_s))

@@ -21,21 +21,26 @@ class Clock:
     """
 
     def __init__(self, speed: float = 1.0):
+        """speed > 1 makes every sleep shorter (fake runs only)."""
         self.speed = speed
 
     def sleep(self, seconds: float) -> None:
+        """Sleep for `seconds` of call time (real time divided by the speed-up)."""
         if seconds > 0:
             time.sleep(seconds / self.speed)
 
     def perf(self) -> float:
+        """High-resolution real time, used to schedule the phone line's 20 ms ticks."""
         return time.perf_counter()
 
 
 def silence(n: int = FRAME) -> np.ndarray:
+    """n samples of silence (one 20 ms frame by default)."""
     return np.zeros(n, dtype=np.float32)
 
 
 def to_frames(pcm: np.ndarray) -> list[np.ndarray]:
+    """Cut audio into 20 ms frames, padding the last one with silence."""
     pcm = np.asarray(pcm, dtype=np.float32)
     pad = (-len(pcm)) % FRAME
     if pad:

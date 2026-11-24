@@ -92,6 +92,7 @@ BLIP_S = 0.5  # a sound this short that starts while we are still talking is a c
 
 @dataclass
 class Turn:
+    """One question and the caller's reply. Times are line time in seconds."""
     name: str
     prompt_start: float
     prompt_end: float
@@ -104,6 +105,7 @@ class Turn:
 
 @dataclass
 class InterruptResult:
+    """When the interruption probe cut in, if it did."""
     valid: bool = False
     barge_t: float | None = None  # when our interruption started (line time)
     interrupt_end: float | None = None
@@ -111,12 +113,19 @@ class InterruptResult:
 
 
 def _is_blip(seg, utt: Utterance) -> bool:
+    """True if a sound is too short to be an answer (under 0.5 s) and started while we were still talking: a cough or
+    'mm'.
+    """
     return seg.start < utt.end_t and seg.end - seg.start < BLIP_S
 
 
 class Screener(threading.Thread):
+    """The defender: answers the call, asks the questions, times the replies and runs the probes, in its own thread."""
     def __init__(self, ep: Endpoint, tts, stt, vad: VAD | None = None, end_silence_ms: int = 900, verbose: bool = False,
                  seed: int | None = None, latency_offset_s: float = 0.0, probe_from: float = SUSPICION_TIMING):
+        """Pick one wording per line at random and pre-render them all, so our own TTS time never counts against the
+        caller.
+        """
         super().__init__(name="screener", daemon=True)
         self.verbose = verbose  # print the call as it happens (human calls), so you can see it working
         self.latency_offset_s = latency_offset_s  # audio device delay, removed before judging timing mid-call
@@ -138,11 +147,13 @@ class Screener(threading.Thread):
         self.pcm = {k: tts.synth(v) for k, v in self.lines.items()}
 
     def _log(self, msg: str) -> None:
+        """Print a live line during human calls."""
         if self.verbose:
             print(f"  [{self.ep.now():5.1f}s] {msg}", flush=True)
 
     # ---- event plumbing --------------------------------------------------------------------
     def _events(self, timeout: float = 0.05) -> list:
+        """The next listener events, using up any saved while we were talking first."""
         if self._backlog:
             evs, self._backlog = self._backlog, []
             return evs
@@ -168,10 +179,17 @@ class Screener(threading.Thread):
         return utt
 
     def await_reply(self, name: str, utt: Utterance, timeout_s: float = REPLY_TIMEOUT_S, patience_s: float = 0.0) -> Turn:
+        """Wait for and record the caller's reply to the question just asked.
+
+        How: the reply starts at the first speech after our question began (talking over us counts, as a negative
+        time); blips are ignored. If they started but haven't finished by the timeout, wait up to 20 s more. Once
+        they stop, wait patience_s more: if they carry on, it is the same answer. latency = reply start - question end.
+        """
         turn = Turn(name, utt.start_t, utt.end_t)
 
         def cond(ev):
             # A reply is the first speech that starts after our prompt began (talking over us counts).
+            """Return the speech segment once the reply ends; None to keep waiting."""
             if ev[0] == "start" and turn.reply_start is None and ev[1] >= utt.start_t:
                 turn.reply_start = ev[1]
             elif ev[0] == "end" and turn.reply_start is not None and ev[1].start >= turn.reply_start - 1e-6:
@@ -231,6 +249,12 @@ class Screener(threading.Thread):
 
     # ---- the interruption probe ------------------------------------------------------------
     def interruption_probe(self) -> None:
+        """Ask them to explain again, cut in once they have talked for 1 s, and record what happens.
+
+        How: listen while they answer, ignoring blips. Once they have been speaking for BARGE_AFTER_S, play the
+        interruption, then wait until they have been quiet for 4 s (14 s at most) to see whether they stop, answer or
+        keep going. If their answer was too short to interrupt, try once more with a different question.
+        """
         for key in ("probe", "probe_retry"):
             utt = self.say(key)
             started = None
@@ -267,6 +291,9 @@ class Screener(threading.Thread):
 
     # ---- main script -----------------------------------------------------------------------
     def run(self) -> None:
+        """The script: greet, purpose, open question, follow-up; if suspicious, the interruption and injection probes;
+        callback; goodbye.
+        """
         try:
             self.await_reply("greet", self.say("greet"), patience_s=PATIENCE_S)
             self.await_reply("purpose", self.say("purpose"), patience_s=PATIENCE_S)
@@ -289,6 +316,7 @@ class Screener(threading.Thread):
 
     # ---- after the call --------------------------------------------------------------------
     def transcribe_turns(self) -> None:
+        """After the call: transcribe each reply, and whatever they said after the interruption."""
         for t in self.turns:
             if t.audio is not None and len(t.audio):
                 t.transcript = self.stt.transcribe(t.audio)
@@ -297,6 +325,7 @@ class Screener(threading.Thread):
             self.post_interrupt_transcript = self.stt.transcribe(audio)
 
     def to_dict(self) -> dict:
+        """The call as plain data for the JSON file (without the audio)."""
         turns = []
         for t in self.turns:
             d = {k: v for k, v in t.__dict__.items() if k != "audio"}

@@ -28,6 +28,7 @@ MIN_BOTS = 3
 
 
 class NotEnoughData(Exception):
+    """Raised when there aren't enough human or bot calls to train on."""
     pass
 
 
@@ -56,7 +57,11 @@ def load_calls(roots, fake: bool = False) -> list[dict]:
 
 
 def _fit_beta(Z: np.ndarray, y: np.ndarray, sw: np.ndarray, l2: float) -> np.ndarray:
-    """Weighted L2 logistic regression by Newton's method. Returns [w..., b]."""
+    """Weighted L2 logistic regression by Newton's method. Returns [w..., b].
+
+    How: each step computes the gradient and the curvature (Hessian) of the weighted, regularised log-loss and
+    solves for the Newton step; it stops once the step is tiny. The bias is not regularised.
+    """
     X = np.hstack([Z, np.ones((len(Z), 1))])
     R = l2 * np.eye(X.shape[1])
     R[-1, -1] = 0.0  # don't shrink the bias
@@ -73,14 +78,23 @@ def _fit_beta(Z: np.ndarray, y: np.ndarray, sw: np.ndarray, l2: float) -> np.nda
 
 
 def _sigmoid(z):
+    """Logistic function, with z clipped to avoid overflow."""
     return 1.0 / (1.0 + np.exp(-np.clip(z, -40, 40)))
 
 
 def _auc(pos: np.ndarray, neg: np.ndarray) -> float:
+    """Share of (bot, human) pairs where the bot scores higher; ties count half."""
     return float(np.mean([(p > n) + 0.5 * (p == n) for p in pos for n in neg]))
 
 
 def fit(calls: list[dict], max_fpr: float = 0.05, l2: float = 1.0, min_humans: int = 5, fake: bool = False) -> dict:
+    """Train the screener. Returns the model as a plain dict (saved as JSON).
+
+    How: build each call's feature vector, fill missing values with the mean, and standardise. Weight the two
+    classes equally, since bot calls far outnumber human ones. Leave-one-out: score each call with a model
+    trained without it, and pick the threshold so at most max_fpr of humans would be flagged. Fit the final
+    model on everything and shift its bias so that threshold sits at 0.5.
+    """
     y = np.array([c["is_bot"] for c in calls], dtype=float)
     n_bot, n_human = int(y.sum()), int(len(y) - y.sum())
     if n_human < min_humans:
@@ -134,23 +148,27 @@ def fit(calls: list[dict], max_fpr: float = 0.05, l2: float = 1.0, min_humans: i
 
 
 def describe(m: dict) -> str:
+    """One-line summary of a trained model's leave-one-out results."""
     l = m["loo"]
     return (f"{m['id']} on {m['n_human']} humans + {m['n_bot']} bots: catches {l['bots_caught']:.0%} of bots, "
             f"flags {l['humans_flagged']:.0%} of humans (leave-one-out), AUC {l['auc']:.2f}")
 
 
 def save_model(m: dict, path: str) -> None:
+    """Write a model to JSON."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w") as f:
         json.dump(m, f, indent=2)
 
 
 def load_model(path: str) -> dict:
+    """Read a model from JSON (plain data, so unlike pickle, loading it can't run code)."""
     with open(path) as f:
         return json.load(f)
 
 
 def main(argv=None) -> int:
+    """Command line: load the calls, train, save, and print the accuracy and each feature's weight."""
     p = argparse.ArgumentParser(description="Train the screener on labelled calls")
     p.add_argument("data", nargs="*", default=["results"], help="folders of saved calls (searched recursively)")
     p.add_argument("--fake", action="store_true", help="train on --fake calls instead (plumbing test only)")

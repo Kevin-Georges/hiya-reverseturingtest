@@ -8,6 +8,7 @@ from .vad import VAD, runs
 
 
 def voiced_from_audio(x: np.ndarray, vad: VAD) -> tuple[np.ndarray, np.ndarray]:
+    """Run the VAD over a whole recording: the time of each frame and whether it is speech."""
     n = len(x) // FRAME
     t = np.arange(n) * FRAME_S
     v = np.array([vad.is_speech(x[i * FRAME : (i + 1) * FRAME]) for i in range(n)], dtype=bool)
@@ -15,6 +16,9 @@ def voiced_from_audio(x: np.ndarray, vad: VAD) -> tuple[np.ndarray, np.ndarray]:
 
 
 def plot_call(path: str, result: dict, screener_t, screener_v, caller_t, caller_v) -> None:
+    """Draw the call timeline: speech bars for each side, reply-time arrows, the interruption shaded, the verdict in
+    the title.
+    """
     import matplotlib
 
     matplotlib.use("Agg")

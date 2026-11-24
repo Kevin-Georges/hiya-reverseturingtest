@@ -82,6 +82,12 @@ RECENT, BEST, LESSONS = 3, 3, 12  # how much memory goes into each prompt (small
 
 
 def clamp(d: dict, prev: dict) -> dict:
+    """Make the attacker's proposed settings safe to use: the LLM's output is untrusted.
+
+    How: for each setting take the proposed value, or keep the previous one; convert the type (accepting
+    'true' or 'yes' for booleans), clip numbers to the allowed range and cut text to its maximum length.
+    Anything that can't be converted keeps the previous value.
+    """
     out = {}
     for k, (typ, lo, hi) in KNOBS.items():
         v = d.get(k, prev[k])
@@ -99,6 +105,7 @@ def clamp(d: dict, prev: dict) -> dict:
 
 
 def to_variant(s: dict, name: str) -> Variant:
+    """Turn a settings dict into a bot Variant."""
     return Variant(
         name=name,
         barge_in=s["barge_in"],
@@ -115,6 +122,7 @@ def to_variant(s: dict, name: str) -> Variant:
 def summarise(results: list[dict]) -> dict:
     """Average several calls with the same strategy into one feedback record."""
     def mean(key, src="scores"):
+        """Average one score or feature over the calls, ignoring calls where it is missing."""
         vals = [r["analysis"][src].get(key) for r in results if isinstance(r["analysis"][src].get(key), (int, float, bool))]
         return round(statistics.fmean(float(v) for v in vals), 3) if vals else None
 
@@ -143,6 +151,7 @@ class Memory:
     """
 
     def __init__(self, path: str | None):
+        """Load earlier rounds and lessons from the file, if it exists."""
         self.path = path
         self.rounds: list[dict] = []
         self.lessons: list[dict] = []
@@ -152,20 +161,24 @@ class Memory:
             self.rounds, self.lessons = d.get("rounds", []), d.get("lessons", [])
 
     def add_round(self, rec: dict) -> None:
+        """Record one round and save straight away, so a crash doesn't lose it."""
         self.rounds.append(rec)
         self.save()
 
     def add_lesson(self, text: str, run: str, rnd: int) -> None:
+        """Save the attacker's one-sentence lesson (up to 300 characters)."""
         text = (text or "").strip()
         if text:
             self.lessons.append({"run": run, "round": rnd, "lesson": text[:300]})
             self.save()
 
     def best(self, k: int = 1) -> list[dict]:
+        """The k rounds with the lowest P(bot) so far, across all runs."""
         scored = [r for r in self.rounds if r["feedback"].get("bot_probability") is not None]
         return sorted(scored, key=lambda r: r["feedback"]["bot_probability"])[:k]
 
     def save(self) -> None:
+        """Write the whole memory to its JSON file (does nothing when path is None)."""
         if self.path:
             os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
             with open(self.path, "w") as f:
@@ -173,15 +186,21 @@ class Memory:
 
 
 def _round_line(h: dict) -> str:
+    """One round as a line of text for the attacker's prompt."""
     return f"Round {h['round']} of run {h['run']}: settings={json.dumps(h['strategy'])}\n  result={json.dumps(h['feedback'])}"
 
 
 class LLMAttacker:
+    """Attacker driven by an LLM: reads the screener's feedback and proposes new bot settings."""
     def __init__(self, llm, defender_learns: bool = False):
+        """defender_learns adds a note to the prompt that the screener retrains after every round."""
         self.llm = llm
         self.defender_learns = defender_learns
 
     def prompt(self, memory: Memory, recent: list[dict]) -> str:
+        """Build the attacker's prompt from memory: recent lessons, the best strategies so far and the latest rounds
+        (kept short for small models).
+        """
         best = memory.best(BEST)
         latest = [h for h in recent[-RECENT:] if h not in best]
         parts = []
@@ -197,6 +216,11 @@ class LLMAttacker:
         return "\n\n".join(parts) + "\n\nPropose the settings for the next round as JSON only."
 
     def propose(self, memory: Memory, recent: list[dict], current: dict) -> tuple[dict, str, str]:
+        """Ask the LLM for the next settings. Returns (settings, reasoning, lesson).
+
+        How: pull the first {...} out of the reply with a regex and parse it as JSON; if that fails, tell the model
+        and try once more, then fall back to a random tweak. Every value goes through clamp().
+        """
         msgs = [{"role": "system", "content": ATTACKER_SYSTEM}, {"role": "user", "content": self.prompt(memory, recent)}]
         for _ in range(2):
             text = self.llm.reply(msgs, max_tokens=500)
@@ -217,9 +241,11 @@ class RandomAttacker:
     """Hill-climbing random search over everything in memory. Used with --fake, and as a fallback."""
 
     def __init__(self, rng: random.Random):
+        """Seeded random generator."""
         self.rng = rng
 
     def propose(self, memory: Memory, recent: list[dict], current: dict) -> tuple[dict, str, str]:
+        """Take the best settings so far and change two at random (flip a boolean, or pick a new number in range)."""
         best = clamp(memory.best(1)[0]["strategy"], START)
         s = dict(best)
         for k in self.rng.sample([k for k in KNOBS if k != "prompt_addendum"], 2):
@@ -229,6 +255,7 @@ class RandomAttacker:
 
 
 def plot(history: list[dict], path: str) -> None:
+    """Chart of each round's scores, with the 0.5 detection line."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -257,6 +284,12 @@ def plot(history: list[dict], path: str) -> None:
 
 
 def main(argv=None) -> int:
+    """Run the red-team loop.
+
+    How: start from the best settings in memory. Each round: run the bot's calls, average what the screener
+    measured, save the round, ask the attacker for new settings and a lesson, and (with --defender-learns)
+    retrain the screener. Ends with a table, a chart and the best settings found.
+    """
     p = argparse.ArgumentParser(description="LLM red-team loop against the screener")
     p.add_argument("--rounds", type=int, default=8)
     p.add_argument("--calls-per-round", type=int, default=1, help="average several calls per strategy (less noise)")
@@ -320,6 +353,9 @@ def main(argv=None) -> int:
     model_path = os.path.join("results", "screener_model_fake.json" if a.fake else "screener_model.json")
 
     def retrain(tag: str) -> None:
+        """Refit the screener on every saved call and use it from the next call on; skip it if there isn't enough
+        data.
+        """
         try:
             m = T.fit(T.load_calls(data_roots, fake=a.fake), max_fpr=a.max_fpr, min_humans=a.min_humans, fake=a.fake)
         except T.NotEnoughData as e:

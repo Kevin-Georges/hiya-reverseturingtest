@@ -29,7 +29,9 @@ ANSWERS = [
 
 
 class SimHuman(threading.Thread):
+    """Scripted fake person for tests: quick, varied replies, and stops when talked over."""
     def __init__(self, ep: Endpoint, stt, tts, vad: VAD | None = None, seed: int | None = None):
+        """Seeded, so test runs are reproducible."""
         super().__init__(name="simhuman", daemon=True)
         self.ep, self.stt, self.tts = ep, stt, tts
         self.vad = vad or VAD()
@@ -38,9 +40,11 @@ class SimHuman(threading.Thread):
         self.log: list[dict] = []
 
     def stop(self) -> None:
+        """Ask the thread to finish."""
         self.stop_event.set()
 
     def _answer(self, heard: str) -> str:
+        """Pick a canned answer by matching keywords in what it heard."""
         h = heard.lower()
         for keys, options in ANSWERS:
             if any(k in h for k in keys):
@@ -49,6 +53,9 @@ class SimHuman(threading.Thread):
 
     def run(self) -> None:
         # People predict the end of a turn, so they react to short pauses.
+        """Main loop: reply after a human-like pause (often almost none, sometimes a long think); if talked over, stop
+        within 0.1 to 0.3 s.
+        """
         lis = Listener(self.ep, self.vad, end_silence_ms=400)
         speaking_since = None
         while not self.stop_event.is_set():
